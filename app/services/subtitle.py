@@ -1,7 +1,36 @@
 import json
+import os
 import os.path
 import re
+import sys
 from timeit import default_timer as timer
+
+# Register NVIDIA DLL directories on Windows so faster-whisper can find cublas64_12.dll
+if sys.platform == "win32":
+    _nvidia_dll_dirs = []
+    try:
+        import nvidia.cublas
+        _nvidia_dll_dirs.append(os.path.join(os.path.dirname(nvidia.cublas.__path__[0]), "cublas", "bin"))
+    except Exception:
+        pass
+    try:
+        import nvidia.cudnn
+        _nvidia_dll_dirs.append(os.path.join(os.path.dirname(nvidia.cudnn.__path__[0]), "cudnn", "bin"))
+    except Exception:
+        pass
+    try:
+        import nvidia.cuda_nvrtc
+        _nvidia_dll_dirs.append(os.path.join(os.path.dirname(nvidia.cuda_nvrtc.__path__[0]), "cuda_nvrtc", "bin"))
+    except Exception:
+        pass
+
+    for dll_dir in _nvidia_dll_dirs:
+        if os.path.isdir(dll_dir):
+            # Method 1: os.add_dll_directory (Python 3.8+)
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(dll_dir)
+            # Method 2: Prepend to PATH as fallback
+            os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
 
 try:
     from faster_whisper import WhisperModel

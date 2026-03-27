@@ -7,8 +7,72 @@ from xml.sax.saxutils import unescape
 
 import edge_tts
 import requests
-from edge_tts import SubMaker, submaker
-from edge_tts.submaker import mktimestamp
+from edge_tts import SubMaker as _OriginalSubMaker, submaker
+try:
+    try:
+    from edge_tts.submaker import mktimestamp
+except ImportError:
+    # Newer edge-tts versions: mktimestamp moved or removed
+    def mktimestamp(time_unit):
+        hour = int(time_unit / 10000000 / 3600)
+        minute = int((time_unit / 10000000 / 60) % 60)
+        seconds = (time_unit / 10000000) % 60
+        return f"{hour:02d}:{minute:02d}:{seconds:06.3f}"
+except ImportError:
+    # Newer edge-tts versions: mktimestamp moved or removed
+    def mktimestamp(time_unit):
+        hour = int(time_unit / 10000000 / 3600)
+        minute = int((time_unit / 10000000 / 60) % 60)
+        seconds = (time_unit / 10000000) % 60
+        return f"{hour:02d}:{minute:02d}:{seconds:06.3f}"
+
+
+class SubMaker(_OriginalSubMaker):
+    """
+    Compatibility wrapper for edge-tts SubMaker.
+    New edge-tts removed .subs, .offset, .create_sub and replaced with .feed()/.cues.
+    This shim restores the old API so existing code keeps working.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._subs = []
+        self._offset = []
+
+    @property
+    def subs(self):
+        return self._subs
+
+    @subs.setter
+    def subs(self, value):
+        self._subs = value
+
+    @property
+    def offset(self):
+        return self._offset
+
+    @offset.setter
+    def offset(self, value):
+        self._offset = value
+
+    def create_sub(self, timestamp_tuple, text):
+        """Old-style API: create_sub((offset, duration), text)"""
+        offset_val, duration_val = timestamp_tuple
+        self._subs.append(text)
+        self._offset.append((offset_val, offset_val + duration_val))
+        # Also feed into new API for compatibility
+        try:
+            super().feed({
+                "type": "WordBoundary",
+                "offset": offset_val,
+                "duration": duration_val,
+                "text": text,
+            })
+        except Exception:
+            pass
+
+# Patch submaker module reference so isinstance() checks still work
+submaker.SubMaker = SubMaker
 from loguru import logger
 from moviepy.video.tools import subtitles
 from moviepy.audio.io.AudioFileClip import AudioFileClip
@@ -1179,7 +1243,7 @@ def azure_tts_v1(
 
             async def _do() -> SubMaker:
                 communicate = edge_tts.Communicate(text, voice_name, rate=rate_str)
-                sub_maker = edge_tts.SubMaker()
+                sub_maker = SubMaker()
                 with open(voice_file, "wb") as file:
                     async for chunk in communicate.stream():
                         if chunk["type"] == "audio":
@@ -1456,13 +1520,13 @@ def gemini_tts(
         SubMaker对象或None
     """
     import base64
-    import json
     import io
+    import time
     from pydub import AudioSegment
     import google.generativeai as genai
     
     try:
-        # 配置Gemini API
+        # Configure Gemini API
         api_key = config.app.get("gemini_api_key", "")
         if not api_key:
             logger.error("Gemini API key is not set")
@@ -1472,7 +1536,6 @@ def gemini_tts(
         
         logger.info(f"start, voice name: {voice_name}, try: 1")
         
-        # 使用Gemini TTS API
         model = genai.GenerativeModel("gemini-2.5-flash-preview-tts")
         
         generation_config = {
@@ -1486,68 +1549,115 @@ def gemini_tts(
             }
         }
         
-        response = model.generate_content(
-            contents=text,
-            generation_config=generation_config
-        )
+        # Split text into sentences for reliable TTS processing
+        sentences = utils.split_string_by_punctuations(text)
+        if not sentences:
+            sentences = [text]
         
-        # 检查响应
-        if not response.candidates or not response.candidates[0].content:
-            logger.error("No audio content received from Gemini TTS")
-            return None
-            
-        # 获取音频数据
-        audio_data = None
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                audio_data = part.inline_data.data
-                break
-                
-        if not audio_data:
-            logger.error("No audio data found in response")
-            return None
-            
-        # 音频数据已经是原始字节，不需要base64解码
-        if isinstance(audio_data, str):
-            # 如果是字符串，则需要base64解码
-            audio_bytes = base64.b64decode(audio_data)
-        else:
-            # 如果已经是字节，直接使用
-            audio_bytes = audio_data
+        # Filter out empty sentences
+        sentences = [s.strip() for s in sentences if s.strip()]
         
-        # 尝试不同的音频格式 - Gemini可能返回不同的格式
-        audio_segment = None
+        logger.info(f"Gemini TTS: processing {len(sentences)} sentence(s)")
         
-        # Gemini返回Linear PCM格式，按照文档参数解析
-        try:
-            audio_segment = AudioSegment.from_file(
-                io.BytesIO(audio_bytes), 
-                format="raw",
-                frame_rate=24000,  # Gemini TTS默认采样率
-                channels=1,        # 单声道
-                sample_width=2     # 16-bit
-            )
-        except Exception as e:
-            logger.error(f"Failed to load PCM audio: {e}")
-            return None
-        
-        # 导出为MP3格式
-        audio_segment.export(voice_file, format="mp3")
-        
-        logger.info(f"completed, output file: {voice_file}")
-        
-        # 创建SubMaker对象用于字幕
+        combined_audio = AudioSegment.empty()
         sub_maker = SubMaker()
-        audio_duration = len(audio_segment) / 1000.0  # 转换为秒
+        current_offset_100ns = 0  # Track offset in 100ns units
         
-        # 将音频长度转换为100纳秒单位（与edge_tts兼容）
-        audio_duration_100ns = int(audio_duration * 10000000)
+        # Free tier: 3 requests/minute. We pace ourselves.
+        requests_this_minute = 0
         
-        # 使用create_sub方法正确创建字幕项
-        sub_maker.create_sub(
-            (0, audio_duration_100ns), 
-            text
-        )
+        for idx, sentence in enumerate(sentences):
+            logger.info(f"Gemini TTS: generating sentence {idx+1}/{len(sentences)}: '{sentence[:50]}...'")
+            
+            try:
+                # Rate limit pacing: free tier = 3 requests/minute
+                if requests_this_minute >= 3:
+                    wait_time = 22  # Wait 22 seconds to be safe
+                    logger.info(f"Gemini TTS: rate limit pacing, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    requests_this_minute = 0
+                
+                # Retry loop for 429 errors
+                response = None
+                for retry in range(3):
+                    try:
+                        response = model.generate_content(
+                            contents=f"Read aloud the following text exactly as written: {sentence}",
+                            generation_config=generation_config
+                        )
+                        requests_this_minute += 1
+                        break  # Success
+                    except Exception as retry_err:
+                        if "429" in str(retry_err):
+                            wait_time = 15 * (retry + 1)
+                            logger.warning(f"Gemini TTS: rate limited, waiting {wait_time}s before retry {retry+1}/3...")
+                            time.sleep(wait_time)
+                            requests_this_minute = 0
+                        else:
+                            raise retry_err
+                
+                if response is None:
+                    logger.warning(f"No response for sentence {idx+1} after retries, skipping")
+                    continue
+                
+                if not response.candidates or not response.candidates[0].content:
+                    logger.warning(f"No audio for sentence {idx+1}, skipping")
+                    continue
+                
+                # Extract audio data
+                audio_data = None
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        audio_data = part.inline_data.data
+                        break
+                
+                if not audio_data:
+                    logger.warning(f"No audio data for sentence {idx+1}, skipping")
+                    continue
+                
+                # Decode audio
+                if isinstance(audio_data, str):
+                    audio_bytes = base64.b64decode(audio_data)
+                else:
+                    audio_bytes = audio_data
+                
+                # Parse PCM audio
+                segment_audio = AudioSegment.from_file(
+                    io.BytesIO(audio_bytes),
+                    format="raw",
+                    frame_rate=24000,
+                    channels=1,
+                    sample_width=2
+                )
+                
+                # Calculate duration in 100ns units
+                segment_duration_ms = len(segment_audio)
+                segment_duration_100ns = int(segment_duration_ms * 10000)  # ms -> 100ns
+                
+                # Add subtitle entry with accurate timing
+                sub_maker.subs.append(sentence)
+                sub_maker.offset.append((current_offset_100ns, current_offset_100ns + segment_duration_100ns))
+                
+                # Advance offset
+                current_offset_100ns += segment_duration_100ns
+                
+                # Concatenate audio
+                combined_audio += segment_audio
+                
+                logger.info(f"Gemini TTS: sentence {idx+1} done, {segment_duration_ms}ms")
+                
+            except Exception as e:
+                logger.warning(f"Gemini TTS: failed on sentence {idx+1}: {e}")
+                continue
+        
+        if len(combined_audio) == 0:
+            logger.error("Gemini TTS: no audio was generated for any sentence")
+            return None
+        
+        # Export combined audio
+        combined_audio.export(voice_file, format="mp3")
+        
+        logger.info(f"completed, output file: {voice_file}, total duration: {len(combined_audio)}ms, {len(sub_maker.subs)} subtitle entries")
         
         return sub_maker
         

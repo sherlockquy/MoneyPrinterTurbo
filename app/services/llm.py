@@ -4,7 +4,7 @@ import re
 import requests
 from typing import List
 
-import g4f
+# import g4f
 from loguru import logger
 from openai import AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
@@ -140,7 +140,7 @@ def _generate_response(prompt: str) -> str:
                     raise ValueError(
                         f"{llm_provider}: model_name is not set, please set it in the config.toml file."
                     )
-                if not base_url:
+                if not base_url and llm_provider not in ["gemini"]:
                     raise ValueError(
                         f"{llm_provider}: base_url is not set, please set it in the config.toml file."
                     )
@@ -346,6 +346,7 @@ Generate a script for a video, depending on the subject of the video.
 6. do not include "voiceover", "narrator" or similar indicators of what should be spoken at the beginning of each paragraph or line.
 7. you must not mention the prompt, or anything about the script itself. also, never talk about the amount of paragraphs or lines. just write the script.
 8. respond in the same language as the video subject.
+9. IMPORTANT: Only include facts you are confident about. Do not invent specific names, dates, locations, or statistics. If unsure about a specific detail, use general language instead.
 
 # Initialization:
 - video subject: {video_subject}
