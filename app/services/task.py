@@ -108,6 +108,11 @@ def generate_audio(task_id, params, video_script):
             return None, None, None
         audio_duration = math.ceil(voice.get_audio_duration(sub_maker))
         if audio_duration == 0:
+            # sub_maker.offset is empty (edge-tts didn't emit WordBoundary events)
+            # fallback: read duration directly from the generated MP3 file
+            logger.warning("sub_maker has no timing offsets, falling back to MP3 file duration")
+            audio_duration = math.ceil(voice.get_audio_duration(audio_file))
+        if audio_duration == 0:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
             logger.error("failed to get audio duration.")
             return None, None, None
@@ -136,6 +141,15 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
     subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
     logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
+
+    # If sub_maker has no word-level timing (edge-tts didn't emit WordBoundary events),
+    # skip edge provider and go directly to whisper
+    has_timing = sub_maker and sub_maker.subs and sub_maker.offset
+    if not has_timing and subtitle_provider == "edge":
+        logger.warning(
+            "sub_maker has no word timing data — edge subtitle skipped, falling back to whisper"
+        )
+        subtitle_provider = "whisper"
 
     subtitle_fallback = False
     if subtitle_provider == "edge":

@@ -9,15 +9,7 @@ import edge_tts
 import requests
 from edge_tts import SubMaker as _OriginalSubMaker, submaker
 try:
-    try:
     from edge_tts.submaker import mktimestamp
-except ImportError:
-    # Newer edge-tts versions: mktimestamp moved or removed
-    def mktimestamp(time_unit):
-        hour = int(time_unit / 10000000 / 3600)
-        minute = int((time_unit / 10000000 / 60) % 60)
-        seconds = (time_unit / 10000000) % 60
-        return f"{hour:02d}:{minute:02d}:{seconds:06.3f}"
 except ImportError:
     # Newer edge-tts versions: mktimestamp moved or removed
     def mktimestamp(time_unit):
@@ -1255,11 +1247,19 @@ def azure_tts_v1(
                 return sub_maker
 
             sub_maker = asyncio.run(_do())
-            if not sub_maker or not sub_maker.subs:
-                logger.warning("failed, sub_maker is None or sub_maker.subs is None")
+            # Check success by audio file size, not sub_maker.subs
+            # (newer edge-tts may not populate .subs via WordBoundary for some voices)
+            file_size = os.path.getsize(voice_file) if os.path.exists(voice_file) else 0
+            if file_size == 0:
+                logger.warning("failed, audio file is empty or not created")
                 continue
 
-            logger.info(f"completed, output file: {voice_file}")
+            if not sub_maker or not sub_maker.subs:
+                logger.warning(
+                    "sub_maker.subs is empty — audio was created OK but no word-level subtitles"
+                )
+
+            logger.info(f"completed, output file: {voice_file}, size: {file_size}")
             return sub_maker
         except Exception as e:
             logger.error(f"failed, error: {str(e)}")
