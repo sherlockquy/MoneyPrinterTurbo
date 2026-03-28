@@ -331,29 +331,44 @@ def _generate_response(prompt: str) -> str:
 def generate_script(
     video_subject: str, language: str = "", paragraph_number: int = 1
 ) -> str:
+    # Target 30-45s videos: ~90-120 words at natural speaking pace (~150 wpm)
+    duration = paragraph_number * 35  # rough: 1 paragraph ≈ 35s
+    word_count = int(duration * 2.8)  # ~2.8 words/sec for TTS pacing
+
     prompt = f"""
-# Role: Video Script Generator
+You are a viral short-form video scriptwriter. Write a script for a {duration}-second
+video about: {video_subject}
 
-## Goals:
-Generate a script for a video, depending on the subject of the video.
+RULES:
+1. HOOK (first sentence): Must create curiosity, shock, or urgency. The viewer
+   decides to stay or swipe in 1.5 seconds. Use one of these patterns:
+   - Contrarian: "Everyone thinks X, but actually..."
+   - Curiosity gap: "There's one thing about X nobody talks about"
+   - Bold claim: "This is why you should never..."
+   - Story: "In [year], a [person] in [place]..."
+   - Direct value: "[Number] ways to [benefit]"
 
-## Constrains:
-1. the script is to be returned as a string with the specified number of paragraphs.
-2. do not under any circumstance reference this prompt in your response.
-3. get straight to the point, don't start with unnecessary things like, "welcome to this video".
-4. you must not include any type of markdown or formatting in the script, never use a title.
-5. only return the raw content of the script.
-6. do not include "voiceover", "narrator" or similar indicators of what should be spoken at the beginning of each paragraph or line.
-7. you must not mention the prompt, or anything about the script itself. also, never talk about the amount of paragraphs or lines. just write the script.
-8. respond in the same language as the video subject.
-9. IMPORTANT: Only include facts you are confident about. Do not invent specific names, dates, locations, or statistics. If unsure about a specific detail, use general language instead.
+2. BODY (middle): 3-5 short punchy points. Each point is 1-2 sentences MAX.
+   - Use concrete numbers and specifics, not vague claims
+   - Each sentence should make the viewer want to hear the next one
+   - Vary sentence length: short. Then a slightly longer one for rhythm.
 
-# Initialization:
-- video subject: {video_subject}
-- number of paragraphs: {paragraph_number}
+3. PAYOFF (last 5 seconds): Deliver on the hook's promise with a twist,
+   surprising fact, or clear call-to-action.
+
+4. FORMAT:
+   - Return ONLY the spoken script text, nothing else
+   - No markdown, no titles, no "voiceover:", no stage directions
+   - No "welcome to this video" or "thanks for watching"
+   - Target word count: {word_count} words (roughly {duration} seconds at
+     natural speaking pace)
+   - IMPORTANT: Only include facts you are confident about. Do not invent
+     specific names, dates, locations, or statistics.
+
+5. TONE: engaging, conversational, slightly provocative, confident
 """.strip()
     if language:
-        prompt += f"\n- language: {language}"
+        prompt += f"\n\n6. LANGUAGE: Write the entire script in {language}. The hook patterns above are examples — adapt them naturally to {language}."
 
     final_script = ""
     logger.info(f"subject: {video_subject}")
@@ -370,9 +385,6 @@ Generate a script for a video, depending on the subject of the video.
 
         # Split the script into paragraphs
         paragraphs = response.split("\n\n")
-
-        # Select the specified number of paragraphs
-        # selected_paragraphs = paragraphs[:paragraph_number]
 
         # Join the selected paragraphs into a single string
         return "\n\n".join(paragraphs)
@@ -403,31 +415,43 @@ Generate a script for a video, depending on the subject of the video.
     return final_script.strip()
 
 
-def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
+def generate_terms(video_subject: str, video_script: str, amount: int = 8) -> List[str]:
     prompt = f"""
-# Role: Video Search Terms Generator
+Generate {amount} stock VIDEO search terms for B-roll footage.
 
-## Goals:
-Generate {amount} search terms for stock videos, depending on the subject of a video.
-
-## Constrains:
-1. the search terms are to be returned as a json-array of strings.
-2. each search term should consist of 1-3 words, always add the main subject of the video.
-3. you must only return the json-array of strings. you must not return anything else. you must not return the script.
-4. the search terms must be related to the subject of the video.
-5. reply with english search terms only.
-
-## Output Example:
-["search term 1", "search term 2", "search term 3","search term 4","search term 5"]
-
-## Context:
-### Video Subject
-{video_subject}
-
-### Video Script
+VIDEO SCRIPT:
 {video_script}
 
-Please note that you must use English for generating video search terms; Chinese is not accepted.
+RULES:
+1. Return ONLY a JSON array: ["term 1", "term 2", ...]
+   CRITICAL: DO NOT use markdown formatting (` ```json `). Return the raw array ONLY.
+2. Each term: 2-4 words, English only
+3. These terms will search a STOCK VIDEO library (Pexels/Pixabay).
+   The library has GENERIC footage only — NO specific brands, games, movies, or celebrities.
+   Think like a VIDEO EDITOR choosing B-roll:
+   - What VISUAL would play behind this specific voiceover?
+   - Be SPECIFIC: "aerial tokyo neon night" not "Japan city"
+   - Include MOTION: "walking crowd shibuya" not "people"
+   - Include EMOTION: "exhausted office worker" not "businessman"
+4. Mix these types:
+   - 3 SPECIFIC scene shots (match script content visually)
+   - 2 ATMOSPHERIC/MOOD shots (cinematic, establishes feeling)
+   - 1 CLOSE-UP/DETAIL shot (hands, objects, textures)
+   - 2 TRANSITION/ABSTRACT shots (timelapse, aerial, slow motion)
+5. CRITICAL: AVOID these mistakes:
+   - No specific game names, movie titles, brand names, character names
+   - No single generic words ("nature", "business", "technology")
+   - No terms that only make sense with context ("easter egg", "hidden detail")
+   Instead use visually descriptive terms: "dark corridor shadows",
+   "person playing video game", "neon lights reflection", "dramatic reveal"
+
+EXAMPLES:
+Script about horror game: ["dark corridor shadows", "person scared expression", "glowing screen dark room",
+  "old building hallway", "hands on keyboard gaming", "flickering light suspense",
+  "rain window night", "dramatic zoom mystery"]
+Script about Japanese work culture: ["tired salary man train", "tokyo office fluorescent lights",
+  "clock ticking close up", "empty desk night", "crowded shibuya crossing timelapse",
+  "coffee cup steam morning", "sunset city skyline", "typing keyboard close up"]
 """.strip()
 
     logger.info(f"subject: {video_subject}")
@@ -438,9 +462,20 @@ Please note that you must use English for generating video search terms; Chinese
         try:
             response = _generate_response(prompt)
             if "Error: " in response:
-                logger.error(f"failed to generate video script: {response}")
+                logger.error(f"failed to generate video terms: {response}")
                 return response
-            search_terms = json.loads(response)
+            
+            # Clean markdown JSON wrappers
+            clean_response = response.strip()
+            if clean_response.startswith("```json"):
+                clean_response = clean_response[7:]
+            elif clean_response.startswith("```"):
+                clean_response = clean_response[3:]
+            if clean_response.endswith("```"):
+                clean_response = clean_response[:-3]
+            clean_response = clean_response.strip()
+
+            search_terms = json.loads(clean_response)
             if not isinstance(search_terms, list) or not all(
                 isinstance(term, str) for term in search_terms
             ):
@@ -450,12 +485,12 @@ Please note that you must use English for generating video search terms; Chinese
         except Exception as e:
             logger.warning(f"failed to generate video terms: {str(e)}")
             if response:
-                match = re.search(r"\[.*]", response)
+                match = re.search(r"\[.*\]", response, re.DOTALL)
                 if match:
                     try:
                         search_terms = json.loads(match.group())
                     except Exception as e:
-                        logger.warning(f"failed to generate video terms: {str(e)}")
+                        logger.warning(f"failed to parse regex extracted terms: {str(e)}")
                         pass
 
         if search_terms and len(search_terms) > 0:

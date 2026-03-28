@@ -47,9 +47,25 @@ class SubClippedVideoClip:
         return f"SubClippedVideoClip(file_path={self.file_path}, start_time={self.start_time}, end_time={self.end_time}, duration={self.duration}, width={self.width}, height={self.height})"
 
 
+import subprocess
+
 audio_codec = "aac"
-video_codec = "libx264"
 fps = 30
+
+def _detect_nvenc() -> str:
+    """Auto-detect NVIDIA NVENC encoder. Returns 'h264_nvenc' if available, else 'libx264'."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-encoders"],
+            capture_output=True, text=True, timeout=10
+        )
+        if "h264_nvenc" in result.stdout:
+            return "h264_nvenc"
+    except Exception:
+        pass
+    return "libx264"
+
+video_codec = _detect_nvenc()
 
 def close_clip(clip):
     if clip is None:
