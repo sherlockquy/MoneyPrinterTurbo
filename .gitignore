@@ -35,3 +35,6 @@ test_*.py
 streamlit.log
 *.mp3
 *.mp4
+*.txt
+/phase2-optimize/
+/resource/fonts/

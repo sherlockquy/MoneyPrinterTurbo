@@ -196,6 +196,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             video_contact_mode=params.video_concat_mode,
             audio_duration=audio_duration * params.video_count,
             max_clip_duration=params.video_clip_duration,
+            visual_mode=params.visual_mode,
         )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)

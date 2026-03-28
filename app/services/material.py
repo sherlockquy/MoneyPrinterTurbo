@@ -10,6 +10,39 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from app.config import config
 from app.models.schema import MaterialInfo, VideoAspect, VideoConcatMode
 from app.utils import utils
+import re
+
+BLACKLISTS = {
+    "scenery_only": ["man", "woman", "girl", "boy", "person", "people", "couple", "kiss", "kissing", "hug", "hugging", "wedding", "bride", "groom", "portrait", "face"],
+    "mixed": ["kiss", "kissing", "hug", "hugging", "wedding", "bride", "groom", "couple", "romantic date"],
+    "human_ok": []
+}
+
+FALLBACK_TERMS = [
+    "beautiful nature scenery",
+    "dark clouds sky",
+    "empty misty road",
+    "calm ocean waves",
+    "trees forest background"
+]
+
+def is_safe_video(text: str, banned_words: List[str]) -> bool:
+    if not banned_words:
+        return True
+    
+    text_lower = text.lower()
+    clean_text = re.sub(r'[^a-zA-Z0-9]', ' ', text_lower)
+    words = set(clean_text.split())
+    
+    for word in banned_words:
+        if " " in word:
+            if word in clean_text:
+                return False
+        else:
+            if word in words:
+                return False
+                
+    return True
 
 requested_count = 0
 
@@ -35,6 +68,7 @@ def search_videos_pexels(
     search_term: str,
     minimum_duration: int,
     video_aspect: VideoAspect = VideoAspect.portrait,
+    banned_words: List[str] = None,
 ) -> List[MaterialInfo]:
     aspect = VideoAspect(video_aspect)
     video_orientation = aspect.name
@@ -64,7 +98,16 @@ def search_videos_pexels(
             return video_items
         videos = response["videos"]
         # loop through each video in the result
+        filtered_out = 0
         for v in videos:
+            if banned_words:
+                video_url = v.get("url", "")
+                tags = " ".join(v.get("tags", []))
+                combined_meta = f"{video_url} {tags}"
+                if not is_safe_video(combined_meta, banned_words):
+                    filtered_out += 1
+                    continue
+
             duration = v["duration"]
             # check if video has desired minimum duration
             if duration < minimum_duration:
@@ -81,6 +124,9 @@ def search_videos_pexels(
                     item.duration = duration
                     video_items.append(item)
                     break
+        
+        if banned_words and filtered_out > 0:
+            logger.info(f"Pexels filtered out {filtered_out} unsafe videos out of {len(videos)} raw results")
         return video_items
     except Exception as e:
         logger.error(f"search videos failed: {str(e)}")
@@ -92,6 +138,7 @@ def search_videos_pixabay(
     search_term: str,
     minimum_duration: int,
     video_aspect: VideoAspect = VideoAspect.portrait,
+    banned_words: List[str] = None,
 ) -> List[MaterialInfo]:
     aspect = VideoAspect(video_aspect)
 
@@ -119,7 +166,16 @@ def search_videos_pixabay(
             return video_items
         videos = response["hits"]
         # loop through each video in the result
+        filtered_out = 0
         for v in videos:
+            if banned_words:
+                page_url = v.get("pageURL", "")
+                tags = v.get("tags", "")
+                combined_meta = f"{page_url} {tags}"
+                if not is_safe_video(combined_meta, banned_words):
+                    filtered_out += 1
+                    continue
+
             duration = v["duration"]
             # check if video has desired minimum duration
             if duration < minimum_duration:
@@ -137,6 +193,9 @@ def search_videos_pixabay(
                     item.duration = duration
                     video_items.append(item)
                     break
+        
+        if banned_words and filtered_out > 0:
+            logger.info(f"Pixabay filtered out {filtered_out} unsafe videos out of {len(videos)} raw results")
         return video_items
     except Exception as e:
         logger.error(f"search videos failed: {str(e)}")
@@ -202,6 +261,7 @@ def download_videos(
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
+    visual_mode: str = "scenery_only",
 ) -> List[str]:
     valid_video_items = []
     valid_video_urls = []
@@ -210,15 +270,35 @@ def download_videos(
     if source == "pixabay":
         search_videos = search_videos_pixabay
 
+    banned_words = BLACKLISTS.get(visual_mode, [])
+    logger.info(f"visual_mode: {visual_mode}, loaded {len(banned_words)} banned words")
+
     for search_term in search_terms:
         video_items = search_videos(
             search_term=search_term,
             minimum_duration=max_clip_duration,
             video_aspect=video_aspect,
+            banned_words=banned_words,
         )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
+        logger.info(f"found {len(video_items)} safe videos for '{search_term}'")
+        
+        # Fallback if too few clips
+        if len(video_items) < 2 and visual_mode == "scenery_only":
+            fallback_term = random.choice(FALLBACK_TERMS)
+            logger.warning(f"term '{search_term}' returned too few safe clips. Fallback triggered: searching for '{fallback_term}'")
+            fallback_items = search_videos(
+                search_term=fallback_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+                banned_words=banned_words,
+            )
+            video_items.extend(fallback_items)
+            logger.info(f"fallback '{fallback_term}' returned {len(fallback_items)} safe videos")
 
-        for item in video_items:
+        # Instead of taking everything, we keep the top safe subset per term to randomize safely
+        top_safe_items = video_items[:10] if len(video_items) > 10 else video_items
+        
+        for item in top_safe_items:
             if item.url not in valid_video_urls:
                 valid_video_items.append(item)
                 valid_video_urls.append(item.url)

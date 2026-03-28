@@ -42,6 +42,12 @@ class VideoAspect(str, Enum):
         return 1080, 1920
 
 
+class VisualMode(str, Enum):
+    scenery_only = "scenery_only"
+    mixed = "mixed"
+    human_ok = "human_ok"
+
+
 class _Config:
     arbitrary_types_allowed = True
 
@@ -76,6 +82,7 @@ class VideoParams(BaseModel):
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     video_count: Optional[int] = 1
+    visual_mode: Optional[str] = VisualMode.scenery_only.value
 
     video_source: Optional[str] = "pexels"
     video_materials: Optional[List[MaterialInfo]] = (
